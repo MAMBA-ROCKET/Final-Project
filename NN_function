@@ -1,0 +1,231 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import time
+import matplotlib.pyplot as plt
+
+# Define an MLP for function approximation with one hidden layer.
+# Using tanh activation for smooth second derivatives.
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.tanh = nn.Tanh()
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.tanh(x)
+        x = self.fc2(x)
+        return x
+
+# Create a regression dataset.
+# Here we sample x uniformly from [-1, 1] and define y = sin(2*pi*x) + noise.
+def create_regression_dataset(n_samples=10000, noise_std=0.1):
+    x = np.random.uniform(-1, 1, (n_samples, 1))
+    y = np.sin(2 * np.pi * x)# + np.random.normal(0, noise_std, (n_samples, 1))
+    return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+
+# Utility functions to flatten and set model parameters
+def get_flat_params(model):
+    return torch.cat([p.view(-1) for p in model.parameters()])
+
+def set_flat_params(model, flat_params):
+    offset = 0
+    for p in model.parameters():
+        numel = p.numel()
+        p.data.copy_(flat_params[offset:offset+numel].view_as(p))
+        offset += numel
+
+def get_flat_grad(loss, model):
+    grads = torch.autograd.grad(loss, model.parameters(), create_graph=True)
+    return torch.cat([g.contiguous().view(-1) for g in grads])
+
+# Hessian-vector product using Pearlmutter's method
+def hessian_vector_product(model, loss, vector):
+    grads = torch.autograd.grad(loss, model.parameters(), create_graph=True)
+    flat_grad = torch.cat([g.contiguous().view(-1) for g in grads])
+    grad_v = torch.dot(flat_grad, vector)
+    Hv = torch.autograd.grad(grad_v, model.parameters(), retain_graph=True)
+    return torch.cat([h.contiguous().view(-1) for h in Hv])
+
+# Helper to compute tau so that ||p + tau*d|| = trust_radius
+def find_tau(p, d, trust_radius):
+    p_norm = p.norm().item()
+    d_norm = d.norm().item()
+    pd = torch.dot(p, d).item()
+    rad = trust_radius
+    a = d_norm**2
+    b = 2 * pd
+    c = p_norm**2 - rad**2
+    discriminant = b**2 - 4 * a * c
+    if discriminant < 0:
+        tau = 0
+    else:
+        sqrt_disc = np.sqrt(discriminant)
+        tau = (-b + sqrt_disc) / (2 * a)
+        if tau < 0 or tau > 1:
+            tau = (-b - sqrt_disc) / (2 * a)
+    return tau
+
+# Truncated CG method to approximately solve the trust-region subproblem:
+# minimize m(p)=g^T p + 0.5 p^T H p subject to ||p|| <= trust_radius.
+def truncated_cg(model, loss, g, trust_radius, cg_tol=1e-4, max_iter=50):
+    p = torch.zeros_like(g)
+    r = -g.clone()  # residual = -g - H*p (with p=0 initially)
+    d = r.clone()
+    if r.norm() < cg_tol:
+        return p
+    for i in range(max_iter):
+        Hd = hessian_vector_product(model, loss, d)
+        dHd = torch.dot(d, Hd)
+        if dHd <= 0:
+            # Negative curvature: take step to the boundary.
+            tau = find_tau(p, d, trust_radius)
+            return p + tau * d
+        alpha = torch.dot(r, r) / dHd
+        p_next = p + alpha * d
+        if p_next.norm() >= trust_radius:
+            tau = find_tau(p, d, trust_radius)
+            return p + tau * d
+        r_next = r - alpha * Hd
+        if r_next.norm() < cg_tol:
+            return p_next
+        beta = torch.dot(r_next, r_next) / torch.dot(r, r)
+        d = r_next + beta * d
+        p = p_next
+        r = r_next
+    return p
+
+# Trust Region Newton-CG training loop for regression (using MSE loss)
+def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0.1):
+    losses = []
+    trust_radius = trust_radius_init
+    for i in range(num_iters):
+        model.zero_grad()
+        outputs = model(X)
+        loss = nn.functional.mse_loss(outputs, y)
+        loss_val = loss.item()
+        losses.append(loss_val)
+        print(f"Iteration {i}, loss: {loss_val:.4f}, trust_radius: {trust_radius:.4f}")
+        
+        # Compute gradient at the current parameters
+        g = get_flat_grad(loss, model)
+        if g.norm().item() < 1e-4:
+            print("Gradient norm small, stopping.")
+            break
+
+        # Use truncated CG to compute the approximate Newton step
+        p = truncated_cg(model, loss, g, trust_radius)
+        
+        # Predicted reduction: m(0)-m(p) = -g^T p - 0.5 * p^T H p
+        Hp = hessian_vector_product(model, loss, p)
+        pred_reduction = -torch.dot(g, p) - 0.5 * torch.dot(p, Hp)
+        
+        # Save current parameters and update with the step
+        flat_params_old = get_flat_params(model)
+        new_params = flat_params_old + p
+        set_flat_params(model, new_params)
+        
+        # Evaluate new loss
+        outputs_new = model(X)
+        loss_new = nn.functional.mse_loss(outputs_new, y)
+        actual_reduction = loss.item() - loss_new.item()
+        rho = actual_reduction / pred_reduction.item() if pred_reduction.item() != 0 else 0
+        
+        # Update trust region radius based on ratio rho
+        if rho < 0.25:
+            trust_radius *= 0.25
+        elif rho > 0.75 and abs(p.norm().item() - trust_radius) < 1e-6:
+            trust_radius = min(2 * trust_radius, 100.0)
+        
+        # Accept or reject the step
+        if rho < eta:
+            set_flat_params(model, flat_params_old)
+            print("Step rejected")
+        else:
+            print("Step accepted")
+    return losses
+
+# Standard SGD training using MSE loss (for comparison)
+def train_sgd(model, X, y, num_epochs=1000, lr=1e-3):
+    optimizer = optim.SGD(model.parameters(), lr=lr)
+    losses = []
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(X)
+        loss = nn.functional.mse_loss(outputs, y)
+        loss.backward()
+        optimizer.step()
+        losses.append(loss.item())
+        print(f"Epoch {epoch}, loss: {loss.item():.4f}")
+    return losses
+
+# Visualization function for function approximation results.
+# It sorts the test data by the input x, then plots the true function and the model's predictions.
+def visualize_regression_results(model, X_test, y_test, title):
+    model.eval()
+    with torch.no_grad():
+        predictions = model(X_test).view(-1).numpy()
+    # Sort the test data for smooth plotting
+    x_sorted = X_test.numpy().flatten()
+    sorted_idx = np.argsort(x_sorted)
+    x_sorted = x_sorted[sorted_idx]
+    y_sorted = y_test.numpy().flatten()[sorted_idx]
+    pred_sorted = predictions[sorted_idx]
+    
+    plt.figure(figsize=(8, 5))
+    plt.plot(x_sorted, y_sorted, label="True Function", color="blue")
+    plt.plot(x_sorted, pred_sorted, label="Model Prediction", color="red", linestyle="--")
+    plt.xlabel("x")
+    plt.ylabel("f(x)")
+    plt.title(title + f" (MSE: {np.mean((pred_sorted - y_sorted)**2):.4f})")
+    plt.legend()
+    plt.show()
+
+# Main function to run training and visualize the function approximation
+def main():
+    torch.manual_seed(0)
+    np.random.seed(0)
+    
+    # Create training dataset for regression.
+    X_train, y_train = create_regression_dataset(n_samples=10000, noise_std=0)
+    
+    # Create two identical models.
+    # Using input_dim=1, hidden_dim=500 (to exceed 1,000 parameters), output_dim=1.
+    model_trust = MLP(input_dim=1, hidden_dim=1000, output_dim=1)
+    model_sgd = MLP(input_dim=1, hidden_dim=1000, output_dim=1)
+    model_sgd.load_state_dict(model_trust.state_dict())
+    
+    # Train with Trust Region Newton-CG
+    print("Training with Trust Region Newton-CG")
+    start_time = time.time()
+    losses_trust = train_trust_region(model_trust, X_train, y_train, num_iters=100, trust_radius_init=1.0, eta=0.1)
+    time_trust = time.time() - start_time
+    print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust))
+    
+    # Train with SGD
+    print("\nTraining with SGD")
+    start_time = time.time()
+    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=100, lr=1e-3)
+    time_sgd = time.time() - start_time
+    print("SGD completed in {:.2f} seconds".format(time_sgd))
+    
+    # Plot training loss curves for comparison
+    plt.figure(figsize=(8, 5))
+    plt.plot(losses_trust, label="Trust Region Newton-CG", marker='o')
+    plt.plot(losses_sgd, label="SGD", marker='s')
+    plt.xlabel("Iteration / Epoch")
+    plt.ylabel("MSE Loss")
+    plt.legend()
+    plt.title("Training Loss Comparison")
+    plt.show()
+    
+    # Create a test dataset and visualize the regression results
+    X_test, y_test = create_regression_dataset(n_samples=2000, noise_std=0)
+    visualize_regression_results(model_trust, X_test, y_test, "Trust Region Newton-CG Regression")
+    visualize_regression_results(model_sgd, X_test, y_test, "SGD Regression")
+
+if __name__ == '__main__':
+    main()
