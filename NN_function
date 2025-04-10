@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(MLP, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc1 = nn.Linear(input_dim, hidden_dim,bias=False)
         self.fc2 = nn.Linear(hidden_dim, output_dim, bias=False)
         self.tanh = nn.Tanh()
         
@@ -53,6 +53,50 @@ def hessian_vector_product(model, loss, vector):
     Hv = torch.autograd.grad(grad_v, model.parameters(), retain_graph=True)
     return torch.cat([h.contiguous().view(-1) for h in Hv])
 
+def tanh_prime(x):
+    return 1/torch.cosh(x)**2
+
+def tanh_prime_2(x):
+    return -2 * 1/torch.cosh(x)**2 * torch.tanh(x)
+
+
+def hessian_vector_product_2(model,v,x,y):
+    """
+    Compute the Hessian-vector product using autograd.
+
+    model: The neural network model.
+    v: The vector to multiply with the Hessian.
+    X: The input data.
+    y: The target data.
+
+    """
+
+    delta = y - model(x)
+    W1 = model.fc1.weight.view(-1)
+    W2 = model.fc2.weight.view(-1)
+    a = model.fc1(x)
+
+    z = model.tanh(a)
+
+    y = model.fc2(z)
+
+
+    R_a = v[0:len(W1)] * x
+    R_z = tanh_prime(a) * R_a
+    R_y = torch.dot(R_z, W2) + torch.dot(v[0:len(W1)], z)
+
+    R_delta = R_y
+    R_delta_j = tanh_prime_2(a) * R_a * (W2 * delta) + tanh_prime(a) * v[0:len(W1)] * delta + tanh_prime(a) * W2 *  R_delta
+
+    result = torch.zeros_like(v)
+    for j in range(len(W1)):
+        result[j] = x * R_delta_j[j]
+
+    for j in range(len(W2)):
+        result[j+len(W1)] = R_delta * z[j] + delta * R_z[j]
+
+    return result
+
 # Helper to compute tau so that ||p + tau*d|| = trust_radius
 def find_tau(p, d, trust_radius):
     p_norm = p.norm().item()
@@ -74,14 +118,31 @@ def find_tau(p, d, trust_radius):
 
 # Truncated CG method to approximately solve the trust-region subproblem:
 # minimize m(p)=g^T p + 0.5 p^T H p subject to ||p|| <= trust_radius.
-def truncated_cg(model, loss, g, trust_radius, cg_tol=1e-4, max_iter=50):
+def truncated_cg(model, loss, g, trust_radius,X,y,cg_tol=1e-4, max_iter=50):
     p = torch.zeros_like(g)
     r = -g.clone()  # residual = -g - H*p (with p=0 initially)
     d = r.clone()
     if r.norm() < cg_tol:
         return p
     for i in range(max_iter):
-        Hd = hessian_vector_product(model, loss, d)
+
+        # method 1 using pearlmutter
+        # Hd = hessian_vector_product(model, loss, d)
+
+
+        # method 2 using Bishop's method
+        Hd = torch.zeros_like(d)
+
+        for i in range(len(X)):
+            temp = hessian_vector_product_2(model,d,X[i],y[i])
+
+            Hd = Hd + temp
+
+        Hd = Hd / len(X)
+
+
+
+
         dHd = torch.dot(d, Hd)
         if dHd <= 0:
             # Negative curvature: take step to the boundary.
@@ -108,7 +169,13 @@ def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0
     for i in range(num_iters):
         model.zero_grad()
         outputs = model(X)
-        loss = nn.functional.mse_loss(outputs, y)
+        # Compute the squared error for each element
+        squared_errors = (y - outputs) ** 2
+
+        # Compute the total square error (Sum of Squared Errors)
+        loss = 1/2 * torch.sum(squared_errors)
+
+        # loss = nn.functional.mse_loss(outputs, y)
         loss_val = loss.item()
         losses.append(loss_val)
         print(f"Iteration {i}, loss: {loss_val:.4f}, trust_radius: {trust_radius:.4f}")
@@ -120,7 +187,7 @@ def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0
             break
 
         # Use truncated CG to compute the approximate Newton step
-        p = truncated_cg(model, loss, g, trust_radius)
+        p = truncated_cg(model, loss, g, trust_radius,X,y)
         
         # Predicted reduction: m(0)-m(p) = -g^T p - 0.5 * p^T H p
         Hp = hessian_vector_product(model, loss, p)
@@ -193,7 +260,7 @@ def main():
     np.random.seed(0)
     
     # Create training dataset for regression.
-    X_train, y_train = create_regression_dataset(n_samples=10000, noise_std=0)
+    X_train, y_train = create_regression_dataset(n_samples=100, noise_std=0)
     
     # Create two identical models.
     # Using input_dim=1, hidden_dim=500 (to exceed 1,000 parameters), output_dim=1.
@@ -205,6 +272,7 @@ def main():
     print(f"Total trainable parameters: {total_params}")
 
     
+    
     # Train with Trust Region Newton-CG
     print("Training with Trust Region Newton-CG")
     start_time = time.time()
@@ -215,7 +283,7 @@ def main():
     # Train with SGD
     print("\nTraining with SGD")
     start_time = time.time()
-    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=3000, lr=1e-3)
+    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=1000, lr=1e-3)
     time_sgd = time.time() - start_time
     print("SGD completed in {:.2f} seconds".format(time_sgd))
     

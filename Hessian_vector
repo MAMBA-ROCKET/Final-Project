@@ -5,16 +5,15 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 
-def hessian_vector_product(model, loss, vector):
-    ## Compute the Hessian-vector product using autograd
-    grads = torch.autograd.grad(loss, model.parameters(), create_graph=True)
-    flat_grad = torch.cat([g.contiguous().view(-1) for g in grads])
-    grad_v = torch.dot(flat_grad, vector)
-    Hv = torch.autograd.grad(grad_v, model.parameters(), retain_graph=True)
-    return torch.cat([h.contiguous().view(-1) for h in Hv])
+
+def tanh_prime(x):
+    return 1/np.cosh(x)**2
+
+def tanh_prime_2(x):
+    return -2 * 1/np.cosh(x)**2 * np.tanh(x)
 
 
-def hessian_vector_product_2(model,v,X,y):
+def hessian_vector_product_2(model,v,x,y):
     """
     Compute the Hessian-vector product using autograd.
 
@@ -25,31 +24,43 @@ def hessian_vector_product_2(model,v,X,y):
 
     """
 
-    delta = model(X) - y
+    delta = y - model(x)
     W1 = model.fc1.weight
     W2 = model.fc2.weight
-    a = model.fc1(X)
+    a = model.fc1(x)
 
     z = model.tanh(a)
 
     y = model.fc2(z)
 
 
-    def tanh_prime(x):
-        return 1/np.cosh(x)**2
-
-    def tanh_prime_2(x):
-        return 2 * 1/np.cosh(x)**2 * np.tanh(x)
-
-    R_a = np.dot(v,X)
+    R_a = v[0:len(W1)] * x
     R_z = tanh_prime(a) * R_a
-    R_y = np.dot(R_z, model.fc2.weight.T) + np.dot(v, z)
+    R_y = np.dot(R_z, model.fc2.weight.T) + np.dot(v[0:len(W1)], z)
 
-    R_delta_k = R_y
-    R_delta_j = tanh_prime_2(a) * R_a * np.dot(W2.T, delta) + tanh_prime(a) * np.dot(v, delta) + tanh_prime(a) * np.dot(W2.T, R_delta_k)
+    R_delta = R_y
+    R_delta_j = tanh_prime_2(a) * R_a * (W2 * delta) + tanh_prime(a) * v[0:len(W1)] * delta + tanh_prime(a) * W2 *  R_delta
 
     for i in range(len(model.fc1.weight)):
-        R_delta_j[i] = np.dot(W1[i], R_delta_j) + np.dot(v, delta) + np.dot(W1[i], R_delta_k)
+        R_delta_j[i] = np.dot(W1[i], R_delta_j) + np.dot(v, delta) + np.dot(W1[i], R_delta)
+
+    result = torch.zeros_like(v)
+    for j in range(len(W1)):
+        result[j] = x * R_delta_j[j]
+
+    for j in range(len(W2)):
+        result[j+len(W1)] = R_delta * z[j] + delta * R_z[j]
+
+    return result
+
+Hv = torch.zeros_like(v)
+
+for i in range(len(y_train)):
+    temp = hessian_vector_product_2(model,v,X[i],y_train[i])
+
+    Hv = Hv + temp
+
+Hv = Hv / len(y_train)
 
 
 
