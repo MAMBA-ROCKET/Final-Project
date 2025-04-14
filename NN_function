@@ -5,7 +5,7 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 import torch.autograd.functional as AF
-from torch.func import functional_call
+# from torch.func import functional_call
 
 
 # Define an MLP for function approximation with one hidden layer.
