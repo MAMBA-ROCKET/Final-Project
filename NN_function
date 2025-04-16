@@ -267,7 +267,7 @@ def main():
     # Using input_dim=1, hidden_dim=500 (to exceed 1,000 parameters), output_dim=1.
     model_trust = MLP(input_dim=1, hidden_dim=1000, output_dim=1)
     model_sgd = MLP(input_dim=1, hidden_dim=1000, output_dim=1)
-    model_sgd.load_state_dict(model_trust.state_dict())
+    # model_sgd.load_state_dict(model_trust.state_dict())
 
     total_params = sum(p.numel() for p in model_trust.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
@@ -277,14 +277,14 @@ def main():
     # Train with Trust Region Newton-CG
     print("Training with Trust Region Newton-CG")
     start_time = time.time()
-    losses_trust = train_trust_region(model_trust, X_train, y_train, num_iters=100, trust_radius_init=1.0, eta=0.1)
+    losses_trust = train_trust_region(model_trust, X_train, y_train, num_iters=10, trust_radius_init=1.0, eta=0.1)
     time_trust = time.time() - start_time
     print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust))
     
     # Train with SGD
     print("\nTraining with SGD")
     start_time = time.time()
-    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=10000, lr=1e-3)
+    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=2000, lr=1e-3)
     time_sgd = time.time() - start_time
     print("SGD completed in {:.2f} seconds".format(time_sgd))
     
