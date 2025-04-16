@@ -164,8 +164,9 @@ def truncated_cg(model, loss, g, trust_radius,X,y,cg_tol=1e-4, max_iter=50):
     return p
 
 # Trust Region Newton-CG training loop for regression (using MSE loss)
-def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0.1):
-    losses = []
+def train_trust_region_timed(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0.1):
+    losses, times = [], []
+    start = time.time()
     trust_radius = trust_radius_init
     for i in range(num_iters):
         model.zero_grad()
@@ -179,6 +180,7 @@ def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0
         # loss = nn.functional.mse_loss(outputs, y)
         loss_val = loss.item()
         losses.append(loss_val)
+        times.append(time.time() - start)
         print(f"Iteration {i}, loss: {loss_val:.4f}, trust_radius: {trust_radius:.4f}")
         
         # Compute gradient at the current parameters
@@ -194,10 +196,10 @@ def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0
         Hp = hessian_vector_product(model, loss, p)
         pred_reduction = -torch.dot(g, p) - 0.5 * torch.dot(p, Hp)
         
-        # Save current parameters and update with the step
-        flat_params_old = get_flat_params(model)
-        new_params = flat_params_old + p
-        set_flat_params(model, new_params)
+        # # Save current parameters and update with the step
+        # flat_params_old = get_flat_params(model)
+        # new_params = flat_params_old + p
+        # set_flat_params(model, new_params)
         
         # Evaluate new loss
         outputs_new = model(X)
@@ -216,13 +218,20 @@ def train_trust_region(model, X, y, num_iters=1000, trust_radius_init=1.0, eta=0
             set_flat_params(model, flat_params_old)
             print("Step rejected")
         else:
+            # Save current parameters and update with the step
+            flat_params_old = get_flat_params(model)
+            new_params = flat_params_old + p
+            set_flat_params(model, new_params)
             print("Step accepted")
-    return losses
+    return losses, times
 
-# Standard SGD training using MSE loss (for comparison)
-def train_sgd(model, X, y, num_epochs=1000, lr=1e-3):
+
+
+# Modified SGD with time logging
+def train_sgd_timed(model, X, y, num_epochs=100, lr=1e-3):
     optimizer = optim.SGD(model.parameters(), lr=lr)
-    losses = []
+    losses, times = [], []
+    start = time.time()
     for epoch in range(num_epochs):
         optimizer.zero_grad()
         outputs = model(X)
@@ -230,8 +239,9 @@ def train_sgd(model, X, y, num_epochs=1000, lr=1e-3):
         loss.backward()
         optimizer.step()
         losses.append(loss.item())
+        times.append(time.time() - start)
         print(f"Epoch {epoch}, loss: {loss.item():.4f}")
-    return losses
+    return losses, times
 
 # Visualization function for function approximation results.
 # It sorts the test data by the input x, then plots the true function and the model's predictions.
@@ -272,31 +282,87 @@ def main():
     total_params = sum(p.numel() for p in model_trust.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
 
-    
-    
-    # Train with Trust Region Newton-CG
-    print("Training with Trust Region Newton-CG")
-    start_time = time.time()
-    losses_trust = train_trust_region(model_trust, X_train, y_train, num_iters=10, trust_radius_init=1.0, eta=0.1)
-    time_trust = time.time() - start_time
-    print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust))
-    
-    # Train with SGD
-    print("\nTraining with SGD")
-    start_time = time.time()
-    losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=2000, lr=1e-3)
-    time_sgd = time.time() - start_time
-    print("SGD completed in {:.2f} seconds".format(time_sgd))
-    
-    # Plot training loss curves for comparison
-    plt.figure(figsize=(8, 5))
-    plt.plot(losses_trust, label="Trust Region Newton-CG", marker='o')
-    plt.plot(losses_sgd, label="SGD", marker='s')
-    plt.xlabel("Iteration / Epoch")
-    plt.ylabel("MSE Loss")
-    plt.legend()
-    plt.title("Training Loss Comparison")
+    # In your main():
+    loss_sgd, time_sgd     = train_sgd_timed(model_sgd, X_train, y_train, num_epochs=2000, lr=1e-3)
+    loss_trust, time_trust = train_trust_region_timed(model_trust, X_train, y_train, num_iters=200, trust_radius_init=1.0)
+
+
+    print("SGD completed in {:.2f} seconds".format(time_sgd[-1]))
+
+    print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust[-1]))
+
+    # Normalize so each curve starts at 1.0
+    rel_sgd   = np.array(loss_sgd)   / loss_sgd[0]
+    rel_trust = np.array(loss_trust) / loss_trust[0]
+
+    epochs_sgd   = np.arange(1, len(rel_sgd)+1)
+    epochs_trust = np.arange(1, len(rel_trust)+1)
+
+    # Plot with dual y‑axes
+    fig, ax1 = plt.subplots(figsize=(8,5))
+
+    # Left axis: relative loss
+    ax1.plot(epochs_sgd,   rel_sgd,   marker='s', label='SGD (rel. loss)')
+    ax1.plot(epochs_trust*10, rel_trust, marker='o', label='TR‑Newton‑CG (rel. loss)')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Relative Loss (L/L₀)')
+    ax1.set_yscale('log')
+    ax1.legend(loc='upper left')
+
+    # Right axis: cumulative time
+    # ax2 = ax1.twinx()
+    # ax2.plot(epochs_sgd,   time_sgd,   linestyle='--', marker='s', label='SGD (time)')
+    # ax2.plot(epochs_trust, time_trust, linestyle='--', marker='o', label='TR‑Newton‑CG (time)')
+    # ax2.set_ylabel('Cumulative Time (s)')
+    # ax2.legend(loc='upper right')
+
+    plt.title('Relative Loss and Cumulative Time vs. Epoch')
     plt.show()
+
+    
+    
+    # # Train with Trust Region Newton-CG
+    # print("Training with Trust Region Newton-CG")
+    # start_time = time.time()
+    # losses_trust = train_trust_region(model_trust, X_train, y_train, num_iters=10, trust_radius_init=1.0, eta=0.1)
+    # time_trust = time.time() - start_time
+    # print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust))
+    
+    # # Train with SGD
+    # print("\nTraining with SGD")
+    # start_time = time.time()
+    # losses_sgd = train_sgd(model_sgd, X_train, y_train, num_epochs=100, lr=1e-3)
+    # time_sgd = time.time() - start_time
+    # print("SGD completed in {:.2f} seconds".format(time_sgd))
+    
+    # print("Trust Region Newton-CG completed in {:.2f} seconds".format(time_trust))
+
+    # Plot training loss curves for comparison
+    # plt.figure(figsize=(8, 5))
+    # plt.plot(losses_trust, label="Trust Region Newton-CG", marker='o')
+    # plt.plot(losses_sgd, label="SGD", marker='s')
+    # plt.xlabel("Iteration / Epoch")
+    # plt.ylabel("MSE Loss")
+    # plt.legend()
+    # plt.title("Training Loss Comparison")
+    # plt.show()
+
+    # losses_trust = np.array(losses_trust)
+    # losses_sgd   = np.array(losses_sgd)
+
+    # rel_trust = losses_trust / losses_trust[0]
+    # rel_sgd   = losses_sgd   / losses_sgd[0]
+
+    # # Plot relative losses
+    # plt.figure(figsize=(8,5))
+    # plt.plot(rel_trust, label="Trust‑Region Newton‑CG", marker='o')
+    # plt.plot(rel_sgd,   label="SGD",                marker='s')
+    # plt.xlabel("Iteration / Epoch")
+    # plt.ylabel("Relative MSE Loss (L / L₀)")
+    # plt.yscale('log')               # optional: log‑scale sometimes helps
+    # plt.legend()
+    # plt.title("Relative Training Loss Comparison")
+    # plt.show()
     
     # Create a test dataset and visualize the regression results
     X_test, y_test = create_regression_dataset(n_samples=2000, noise_std=0)
