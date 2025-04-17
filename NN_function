@@ -282,9 +282,10 @@ def main():
     total_params = sum(p.numel() for p in model_trust.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
 
-    # In your main():
-    loss_sgd, time_sgd     = train_sgd_timed(model_sgd, X_train, y_train, num_epochs=2000, lr=1e-3)
-    loss_trust, time_trust = train_trust_region_timed(model_trust, X_train, y_train, num_iters=200, trust_radius_init=1.0)
+    num_epochs = 5000
+    num_iters  = 200
+    loss_sgd, time_sgd     = train_sgd_timed(model_sgd, X_train, y_train, num_epochs, lr=1e-3)
+    loss_trust, time_trust = train_trust_region_timed(model_trust, X_train, y_train, num_iters, trust_radius_init=1.0)
 
 
     print("SGD completed in {:.2f} seconds".format(time_sgd[-1]))
@@ -302,12 +303,12 @@ def main():
     fig, ax1 = plt.subplots(figsize=(8,5))
 
     # Left axis: relative loss
-    ax1.plot(epochs_sgd,   rel_sgd,   marker='s', label='SGD (rel. loss)')
-    ax1.plot(epochs_trust*10, rel_trust, marker='o', label='TR‑Newton‑CG (rel. loss)')
-    ax1.set_xlabel('Epoch')
+    ax1.plot(epochs_sgd,   rel_sgd,   marker='.', label=f'SGD with {num_epochs} epochs')
+    ax1.plot(epochs_trust * num_epochs/num_iters, rel_trust, marker='.', label=f'TRCG with {num_iters} iterations')
+    ax1.set_xlabel('Iteration / Epoch')
     ax1.set_ylabel('Relative Loss (L/L₀)')
     ax1.set_yscale('log')
-    ax1.legend(loc='upper left')
+    ax1.legend(loc='upper right')
 
     # Right axis: cumulative time
     # ax2 = ax1.twinx()
