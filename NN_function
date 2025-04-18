@@ -131,17 +131,17 @@ def truncated_cg(model, loss, g, trust_radius,X,y,cg_tol=1e-4, max_iter=50):
     for i in range(max_iter):
 
         # method 1 using pearlmutter
-        # Hd = hessian_vector_product(model, loss, d)
+        Hd = hessian_vector_product(model, loss, d)
 
         # method 3 using Bishop's method
-        Hd = torch.zeros_like(d)
+        # Hd = torch.zeros_like(d)
 
-        for i in range(len(X)):
-            temp = hessian_vector_product_2(model,d,X[i],y[i])
+        # for i in range(len(X)):
+        #     temp = hessian_vector_product_2(model,d,X[i],y[i])
 
-            Hd = Hd + temp
+        #     Hd = Hd + temp
 
-        Hd = Hd / len(X)
+        # Hd = Hd / len(X)
 
 
         dHd = torch.dot(d, Hd)
@@ -282,8 +282,8 @@ def main():
     total_params = sum(p.numel() for p in model_trust.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
 
-    num_epochs = 100
-    num_iters  = 10
+    num_epochs = 5000
+    num_iters  = 200
     loss_sgd, time_sgd     = train_sgd_timed(model_sgd, X_train, y_train, num_epochs, lr=1e-3)
     loss_trust, time_trust = train_trust_region_timed(model_trust, X_train, y_train, num_iters, trust_radius_init=1.0)
 
@@ -300,15 +300,42 @@ def main():
     epochs_trust = np.arange(1, len(rel_trust)+1)
 
     # Plot with dual y‑axes
-    fig, ax1 = plt.subplots(figsize=(8,5))
+    # fig, ax1 = plt.subplots(figsize=(8,5))
 
-    # Left axis: relative loss
-    ax1.plot(epochs_sgd,   rel_sgd,   marker='.', label=f'SGD with {num_epochs} epochs')
-    ax1.plot(epochs_trust * num_epochs/num_iters, rel_trust, marker='.', label=f'TRCG with {num_iters} iterations')
-    ax1.set_xlabel('Iteration / Epoch')
+    # # Left axis: relative loss
+    # ax1.plot(epochs_sgd,   rel_sgd,   marker='.', label=f'SGD with {num_epochs} epochs')
+    # ax1.plot(epochs_trust * num_epochs/num_iters, rel_trust, marker='.', label=f'TRCG with {num_iters} iterations')
+    # ax1.set_xlabel('Iteration / Epoch')
+    # ax1.set_ylabel('Relative Loss (L/L₀)')
+    # ax1.set_yscale('log')
+    # ax1.legend(loc='upper right')
+
+
+    # Plot with dual x-axes
+    fig, ax1 = plt.subplots(figsize=(8, 5))
+
+    # Left axis: relative loss for SGD
+    ax1.plot(epochs_sgd, rel_sgd, marker='.', label=f'SGD with {num_epochs} epochs')
+    ax1.set_xlabel('Epoch (SGD)')
     ax1.set_ylabel('Relative Loss (L/L₀)')
     ax1.set_yscale('log')
-    ax1.legend(loc='upper right')
+    # ax1.legend(loc='upper right')
+
+    # Create the second x-axis for TRCG
+    ax2 = ax1.twiny()
+    ax2.plot(epochs_trust , rel_trust, marker='.', label=f'TRCG with {num_iters} iterations', color='orange')
+    ax2.set_xlabel('Iteration (TRCG)')
+    # ax2.legend(loc='upper right')
+
+    # Combine legends from both axes
+    handles1, labels1 = ax1.get_legend_handles_labels()  # Get handles and labels from ax1 (SGD)
+    handles2, labels2 = ax2.get_legend_handles_labels()  # Get handles and labels from ax2 (TRCG)
+    ax1.legend(handles=handles1 + handles2, labels=labels1 + labels2, loc='upper right')
+
+    # Show the plot
+    plt.title('Relative Loss vs. Iteration/Epoch')
+    plt.show()
+
 
     # Right axis: cumulative time
     # ax2 = ax1.twinx()
@@ -317,8 +344,8 @@ def main():
     # ax2.set_ylabel('Cumulative Time (s)')
     # ax2.legend(loc='upper right')
 
-    plt.title('Relative Loss and Cumulative Time vs. Epoch')
-    plt.show()
+    # plt.title('Relative Loss and Cumulative Time vs. Epoch')
+    # plt.show()
 
     
     
