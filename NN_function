@@ -131,17 +131,17 @@ def truncated_cg(model, loss, g, trust_radius,X,y,cg_tol=1e-4, max_iter=50):
     for i in range(max_iter):
 
         # method 1 using pearlmutter
-        Hd = hessian_vector_product(model, loss, d)
+        # Hd = hessian_vector_product(model, loss, d)
 
         # method 3 using Bishop's method
-        # Hd = torch.zeros_like(d)
+        Hd = torch.zeros_like(d)
 
-        # for i in range(len(X)):
-        #     temp = hessian_vector_product_2(model,d,X[i],y[i])
+        for i in range(len(X)):
+            temp = hessian_vector_product_2(model,d,X[i],y[i])
 
-        #     Hd = Hd + temp
+            Hd = Hd + temp
 
-        # Hd = Hd / len(X)
+        Hd = Hd / len(X)
 
 
         dHd = torch.dot(d, Hd)
@@ -282,8 +282,8 @@ def main():
     total_params = sum(p.numel() for p in model_trust.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
 
-    num_epochs = 5000
-    num_iters  = 200
+    num_epochs = 100
+    num_iters  = 10
     loss_sgd, time_sgd     = train_sgd_timed(model_sgd, X_train, y_train, num_epochs, lr=1e-3)
     loss_trust, time_trust = train_trust_region_timed(model_trust, X_train, y_train, num_iters, trust_radius_init=1.0)
 
